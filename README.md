@@ -1,4 +1,4 @@
-# otorepair
+# Otorepair
 
 Auto-healing dev loop CLI. Monitors your running process, detects errors, and automatically invokes [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to fix them.
 
