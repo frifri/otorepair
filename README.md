@@ -14,8 +14,9 @@ Start command → Monitor output → Detect error → Claude fixes it → Reload
 2. **Heuristic pre-filter** watches stderr for suspicious patterns (tracebacks, error keywords)
 3. When triggered, **Claude Haiku triages** the output to confirm it's a real error
 4. If confirmed (or if the process crashed), **Claude Code fixes** the source files
-5. If the process is still alive, hot-reload picks up the changes. If it crashed, otorepair restarts it
-6. **Circuit breaker** stops after 3 consecutive failed fix attempts
+5. Fix output is **streamed in real-time** so you can see what Claude is doing
+6. If the process is still alive, hot-reload picks up the changes. If it crashed, otorepair restarts it
+7. **Circuit breaker** stops after 3 consecutive failed fix attempts
 
 ## Requirements
 
@@ -26,6 +27,12 @@ Start command → Monitor output → Detect error → Claude fixes it → Reload
 
 ```bash
 uv tool install -e .
+```
+
+For development (includes test dependencies):
+
+```bash
+uv pip install -e ".[dev]"
 ```
 
 ## Usage
@@ -39,9 +46,21 @@ otorepair "flask run --debug"
 otorepair will display all output from your command normally. When an error is detected, you'll see:
 
 ```
-[otorepair] Error detected: ImportError: No module named 'foo'
-[otorepair] Attempting fix (attempt 1/3)...
-[otorepair] Fix applied in 4.2s. Waiting for hot-reload...
+[otorepair] Process crashed. Attempting fix (attempt 1/3)...
+  | Looking at the traceback, the issue is a missing import...
+  | I'll fix the import in src/main.py...
+[otorepair] Fix applied in 4.2s.
+[otorepair] Process restarted (PID 12345)
+```
+
+### Verbose mode
+
+Use `-v` flags for debug output when troubleshooting:
+
+```bash
+otorepair -v "python app.py"     # Key events (subprocess spawn, exit codes)
+otorepair -vv "python app.py"    # Detailed (stdin bytes, stderr, triage results)
+otorepair -vvv "python app.py"   # Full debug (prompt text, raw data, buffer contents)
 ```
 
 ## Error detection
@@ -56,3 +75,10 @@ Process crashes (non-zero exit) skip triage entirely and go straight to the fix 
 ## Circuit breaker
 
 If the same error persists after 3 consecutive fix attempts, otorepair stops and shows you the error. If the error *changes* between attempts (meaning progress is being made), the counter resets.
+
+## Running tests
+
+```bash
+uv pip install -e ".[dev]"
+pytest
+```
