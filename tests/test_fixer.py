@@ -1,11 +1,19 @@
-"""Tests for otorepair.fixer — Claude Code invocation for fixes."""
+"""Tests for otorepair.fixer — agent CLI invocation for fixes."""
 
 import asyncio
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from otorepair.fixer import FixResult, _print_fix_output, attempt_fix
+from otorepair.backends import CursorBackend
+from otorepair.fixer import (
+    FixResult,
+    _print_fix_output,
+    attempt_fix,
+    format_stream_json_fix_event,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +64,29 @@ class TestFixResult:
 # ---------------------------------------------------------------------------
 # _print_fix_output
 # ---------------------------------------------------------------------------
+
+
+class TestFormatStreamJsonFixEvent:
+    def test_tool_read_started(self):
+        obj = {
+            "type": "tool_call",
+            "subtype": "started",
+            "tool_call": {"readToolCall": {"args": {"path": "/src/app.py"}}},
+        }
+        line = format_stream_json_fix_event(obj)
+        assert line is not None
+        assert "read" in line
+        assert "app.py" in line
+
+    def test_system_init_model(self):
+        obj = {"type": "system", "subtype": "init", "model": "gpt-4"}
+        line = format_stream_json_fix_event(obj)
+        assert line is not None
+        assert "gpt-4" in line
+
+    def test_assistant_returns_none(self):
+        obj = {"type": "assistant", "message": {"content": [{"text": "hi"}]}}
+        assert format_stream_json_fix_event(obj) is None
 
 
 class TestPrintFixOutput:
@@ -112,6 +143,89 @@ class TestAttemptFixSuccess:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+
+    @pytest.mark.asyncio
+    async def test_fix_passes_subprocess_cwd(self, tmp_path):
+        mock_proc = _make_mock_proc(returncode=0)
+        cwd = tmp_path / "repo"
+        cwd.mkdir()
+
+        with patch(
+            "otorepair.fixer.asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
+            await attempt_fix(
+                error_summary="e",
+                traceback_text="tb",
+                original_command="cmd",
+                subprocess_cwd=cwd,
+            )
+
+        mock_exec.assert_called_once()
+        assert mock_exec.call_args.kwargs.get("cwd") == str(cwd.resolve())
+
+    @pytest.mark.asyncio
+    async def test_fix_cursor_backend_argv(self, tmp_path):
+        ws = tmp_path / "repo"
+        ws.mkdir()
+        mock_proc = _make_mock_proc(returncode=0)
+        backend = CursorBackend(workspace=ws)
+
+        with patch(
+            "otorepair.fixer.asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
+            await attempt_fix(
+                error_summary="e",
+                traceback_text="tb",
+                original_command="cmd",
+                backend=backend,
+            )
+
+        mock_exec.assert_called_once()
+        args = mock_exec.call_args[0]
+        kwargs = mock_exec.call_args[1]
+        assert args[0] == "agent"
+        assert "-p" in args
+        assert "--force" in args
+        assert "--trust" in args
+        ws_idx = args.index("--workspace")
+        assert args[ws_idx + 1] == str(ws.resolve())
+        assert kwargs["stdin"] == asyncio.subprocess.PIPE
+        assert "--output-format" in args
+        assert "stream-json" in args
+        assert "--stream-partial-output" in args
+
+    @pytest.mark.asyncio
+    async def test_cursor_stream_json_stdout_becomes_human_output(self, tmp_path):
+        ws = tmp_path / "repo"
+        ws.mkdir()
+
+        events = [
+            {"type": "assistant", "message": {"content": [{"text": "done"}]}},
+            {
+                "type": "tool_call",
+                "subtype": "started",
+                "tool_call": {
+                    "writeToolCall": {"args": {"path": str(ws / "f.py")}}
+                },
+            },
+        ]
+        ndjson = "".join(json.dumps(e) + "\n" for e in events)
+        mock_proc = _make_mock_proc(stdout_data=ndjson.encode(), returncode=0)
+        backend = CursorBackend(workspace=ws)
+
+        with patch(
+            "otorepair.fixer.asyncio.create_subprocess_exec", return_value=mock_proc
+        ):
+            result = await attempt_fix(
+                error_summary="e",
+                traceback_text="tb",
+                original_command="cmd",
+                backend=backend,
+            )
+
+        assert result.success
+        assert "done" in result.output
+        assert "tool:write" in result.output
 
     @pytest.mark.asyncio
     async def test_prompt_sent_via_stdin(self):
@@ -298,3 +412,21 @@ class TestAttemptFixOSError:
         assert not result.success
         assert "claude" in result.output.lower()
         assert result.duration > 0
+
+    @pytest.mark.asyncio
+    async def test_cursor_agent_not_found(self, tmp_path):
+        ws = tmp_path / "r"
+        ws.mkdir()
+        with patch(
+            "otorepair.fixer.asyncio.create_subprocess_exec",
+            side_effect=OSError("No such file or directory: 'agent'"),
+        ):
+            result = await attempt_fix(
+                error_summary="err",
+                traceback_text="tb",
+                original_command="cmd",
+                backend=CursorBackend(workspace=ws),
+            )
+
+        assert not result.success
+        assert "agent" in result.output.lower()
