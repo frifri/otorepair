@@ -2,10 +2,12 @@
 
 import asyncio
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from otorepair.backends import CursorBackend
 from otorepair.detector import ErrorDetector, TriageResult
 from otorepair.patterns import MAX_BUFFER_LINES, SETTLE_TIMEOUT
 
@@ -313,6 +315,44 @@ class TestTriage:
             result = await d.triage("context")
 
         assert not result.is_error
+
+    @pytest.mark.asyncio
+    async def test_triage_cursor_backend_argv(self, tmp_path):
+        ws = tmp_path / "app"
+        ws.mkdir()
+        d = ErrorDetector(CursorBackend(workspace=ws))
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"NO", b"")
+
+        with patch(
+            "otorepair.detector.asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
+            await d.triage("ctx")
+
+        mock_exec.assert_called_once()
+        args = mock_exec.call_args[0]
+        assert args[0] == "agent"
+        assert "-p" in args
+        assert "--trust" in args
+        assert "--workspace" in args
+        ws_idx = args.index("--workspace")
+        assert args[ws_idx + 1] == str(ws.resolve())
+
+    @pytest.mark.asyncio
+    async def test_triage_passes_subprocess_cwd(self, tmp_path):
+        cwd = tmp_path / "root"
+        cwd.mkdir()
+        d = ErrorDetector(subprocess_cwd=cwd)
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"NO", b"")
+
+        with patch(
+            "otorepair.detector.asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
+            await d.triage("ctx")
+
+        assert mock_exec.call_args.kwargs.get("cwd") == str(cwd.resolve())
 
 
 # ---------------------------------------------------------------------------

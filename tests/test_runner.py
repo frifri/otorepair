@@ -3,6 +3,7 @@
 import asyncio
 import os
 import signal
+import sys
 
 import pytest
 
@@ -83,6 +84,16 @@ class TestProcessRunnerStart:
         r = ProcessRunner("echo hi")
         # Access private _env to verify
         assert r._env.get("PYTHONUNBUFFERED") == "1"
+
+    @pytest.mark.asyncio
+    async def test_start_respects_cwd(self, tmp_path):
+        code = "import os; print(os.getcwd(), end='')"
+        cmd = f"{sys.executable} -c {repr(code)}"
+        r = ProcessRunner(cmd, cwd=tmp_path)
+        proc = await r.start()
+        out = await proc.stdout.read()
+        await proc.wait()
+        assert out.decode() == str(tmp_path.resolve())
 
 
 # ---------------------------------------------------------------------------

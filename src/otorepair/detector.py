@@ -1,8 +1,11 @@
 import asyncio
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
+from otorepair.backends import AgentBackend, ClaudeBackend
 from otorepair.log import debug
 from otorepair.patterns import (
     ERROR_LINE,
@@ -24,7 +27,13 @@ class TriageResult:
 
 
 class ErrorDetector:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        backend: AgentBackend | None = None,
+        subprocess_cwd: Path | None = None,
+    ) -> None:
+        self._backend = backend or ClaudeBackend()
+        self._subprocess_cwd = subprocess_cwd
         self._buffer: deque[str] = deque(maxlen=MAX_BUFFER_LINES)
         self._settle_timer: float | None = None
         self._heuristic_triggered = False
@@ -86,19 +95,20 @@ class ErrorDetector:
             "respond with EXACTLY:\nNO"
         )
 
-        debug("Spawning triage: claude -p --model haiku")
+        argv = self._backend.triage_argv()
+        debug(f"Spawning triage: {' '.join(argv)}")
         debug(f"Triage prompt ({len(prompt)} bytes):\n{prompt}", level=3)
 
+        popen_kw: dict = dict(
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        if self._subprocess_cwd is not None:
+            popen_kw["cwd"] = os.fspath(self._subprocess_cwd)
+
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "claude",
-                "-p",
-                "--model",
-                "haiku",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            proc = await asyncio.create_subprocess_exec(*argv, **popen_kw)
             debug(f"Triage process started (PID {proc.pid})")
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(input=prompt.encode()),

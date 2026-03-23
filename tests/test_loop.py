@@ -1,10 +1,12 @@
 """Tests for otorepair.loop — orchestrator helper functions."""
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from otorepair.backends import ClaudeBackend
 from otorepair.circuit_breaker import CircuitBreaker
 from otorepair.detector import ErrorDetector, TriageResult
 from otorepair.fixer import FixResult
@@ -99,7 +101,9 @@ class TestHandleCrash:
         for _ in range(CircuitBreaker.MAX_RETRIES):
             breaker.record_attempt(success=False, error_signature="e")
 
-        result = await _handle_crash(detector, breaker, "cmd")
+        result = await _handle_crash(
+            detector, breaker, "cmd", ClaudeBackend(), Path.cwd()
+        )
         assert result is False
 
     @pytest.mark.asyncio
@@ -110,7 +114,9 @@ class TestHandleCrash:
 
         fix_result = FixResult(success=True, output="Fixed!", duration=2.0)
         with patch("otorepair.loop.attempt_fix", return_value=fix_result):
-            result = await _handle_crash(detector, breaker, "python app.py")
+            result = await _handle_crash(
+                detector, breaker, "python app.py", ClaudeBackend(), Path.cwd()
+            )
 
         assert result is True
         assert breaker.attempts == 0  # success resets
@@ -123,7 +129,9 @@ class TestHandleCrash:
 
         fix_result = FixResult(success=False, output="Could not fix", duration=1.0)
         with patch("otorepair.loop.attempt_fix", return_value=fix_result):
-            result = await _handle_crash(detector, breaker, "cmd")
+            result = await _handle_crash(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd()
+            )
 
         # First failure — not tripped yet
         assert result is True
@@ -140,7 +148,9 @@ class TestHandleCrash:
 
         fix_result = FixResult(success=False, output="nope", duration=1.0)
         with patch("otorepair.loop.attempt_fix", return_value=fix_result):
-            result = await _handle_crash(detector, breaker, "cmd")
+            result = await _handle_crash(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd()
+            )
 
         assert result is False
         assert breaker.is_tripped()
@@ -160,7 +170,9 @@ class TestHandleLiveError:
 
         triage_result = TriageResult(is_error=False)
         with patch.object(detector, "triage", return_value=triage_result):
-            result = await _handle_live_error(detector, breaker, "cmd")
+            result = await _handle_live_error(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd()
+            )
 
         assert result is True
 
@@ -181,7 +193,9 @@ class TestHandleLiveError:
             patch.object(detector, "triage", return_value=triage_result),
             patch("otorepair.loop.attempt_fix", return_value=fix_result),
         ):
-            result = await _handle_live_error(detector, breaker, "cmd")
+            result = await _handle_live_error(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd()
+            )
 
         assert result is True
 
@@ -202,7 +216,9 @@ class TestHandleLiveError:
             patch.object(detector, "triage", return_value=triage_result),
             patch("otorepair.loop.attempt_fix", return_value=fix_result),
         ):
-            result = await _handle_live_error(detector, breaker, "cmd")
+            result = await _handle_live_error(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd()
+            )
 
         assert result is True  # not tripped yet
         assert breaker.attempts == 1
@@ -222,7 +238,9 @@ class TestHandleLiveError:
         )
 
         with patch.object(detector, "triage", return_value=triage_result):
-            result = await _handle_live_error(detector, breaker, "cmd")
+            result = await _handle_live_error(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd()
+            )
 
         assert result is False
 
@@ -234,7 +252,9 @@ class TestHandleLiveError:
 
         triage_result = TriageResult(is_error=False)
         with patch.object(detector, "triage", return_value=triage_result):
-            await _handle_live_error(detector, breaker, "cmd")
+            await _handle_live_error(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd()
+            )
 
         # Detector should have been reset after triage
         assert not detector.heuristic_triggered

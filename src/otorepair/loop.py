@@ -1,7 +1,8 @@
 import asyncio
 import signal
-import sys
+from pathlib import Path
 
+from otorepair.backends import AgentBackend, ClaudeBackend
 from otorepair.circuit_breaker import CircuitBreaker
 from otorepair.detector import ErrorDetector
 from otorepair.fixer import attempt_fix
@@ -62,6 +63,8 @@ async def _handle_crash(
     detector: ErrorDetector,
     breaker: CircuitBreaker,
     command: str,
+    backend: AgentBackend,
+    subprocess_cwd: Path,
 ) -> bool:
     context = detector.get_buffered_context()
     lines = context.splitlines()
@@ -81,6 +84,8 @@ async def _handle_crash(
         error_summary=error_sig,
         traceback_text=recent,
         original_command=command,
+        backend=backend,
+        subprocess_cwd=subprocess_cwd,
     )
 
     breaker.record_attempt(result.success, error_sig)
@@ -98,6 +103,8 @@ async def _handle_live_error(
     detector: ErrorDetector,
     breaker: CircuitBreaker,
     command: str,
+    backend: AgentBackend,
+    subprocess_cwd: Path,
 ) -> bool:
     context = detector.get_buffered_context()
     status("Suspicious output detected. Running triage...")
@@ -130,6 +137,8 @@ async def _handle_live_error(
         error_summary=triage.error_summary,
         traceback_text=triage.traceback_text,
         original_command=command,
+        backend=backend,
+        subprocess_cwd=subprocess_cwd,
     )
 
     breaker.record_attempt(result.success, error_sig)
@@ -143,11 +152,22 @@ async def _handle_live_error(
         return not breaker.is_tripped()
 
 
-async def run(command: str) -> int:
+async def run(
+    command: str,
+    backend: AgentBackend | None = None,
+    workspace: Path | None = None,
+    agent_executable_path: str | None = None,
+) -> int:
+    agent_backend = backend or ClaudeBackend()
+    workdir = (workspace or Path.cwd()).resolve()
+    for line in agent_backend.session_summary_lines(
+        workdir=workdir,
+        agent_executable_path=agent_executable_path,
+    ):
+        status(line)
     status(f"Watching: {command}")
-
-    runner = ProcessRunner(command)
-    detector = ErrorDetector()
+    runner = ProcessRunner(command, cwd=workdir)
+    detector = ErrorDetector(agent_backend, subprocess_cwd=workdir)
     breaker = CircuitBreaker()
 
     # Handle signals for clean shutdown
@@ -217,7 +237,9 @@ async def run(command: str) -> int:
 
             status(f"Process exited with code {exit_code}.")
 
-            should_continue = await _handle_crash(detector, breaker, command)
+            should_continue = await _handle_crash(
+                detector, breaker, command, agent_backend, workdir
+            )
             if not should_continue:
                 status(
                     "Circuit breaker tripped after 3 consecutive failed fixes. Giving up."
@@ -230,7 +252,9 @@ async def run(command: str) -> int:
 
         elif settle_task in done:
             # Error detected while process is alive
-            should_continue = await _handle_live_error(detector, breaker, command)
+            should_continue = await _handle_live_error(
+                detector, breaker, command, agent_backend, workdir
+            )
             if not should_continue:
                 stop_event.set()
                 await runner.stop()

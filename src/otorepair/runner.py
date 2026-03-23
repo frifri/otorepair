@@ -1,21 +1,32 @@
 import asyncio
 import os
 import signal
+from pathlib import Path
 
 
 class ProcessRunner:
-    def __init__(self, command: str) -> None:
+    def __init__(
+        self,
+        command: str,
+        cwd: str | Path | None = None,
+    ) -> None:
         self._command = command
+        self._cwd = os.fspath(cwd) if cwd is not None else None
         self._process: asyncio.subprocess.Process | None = None
         self._env = {**os.environ, "PYTHONUNBUFFERED": "1"}
 
     async def start(self) -> asyncio.subprocess.Process:
-        self._process = await asyncio.create_subprocess_shell(
-            self._command,
+        kwargs: dict = dict(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=self._env,
             preexec_fn=os.setsid,
+        )
+        if self._cwd is not None:
+            kwargs["cwd"] = self._cwd
+        self._process = await asyncio.create_subprocess_shell(
+            self._command,
+            **kwargs,
         )
         return self._process
 
