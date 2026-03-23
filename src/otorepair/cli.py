@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import os
 import shutil
 import sys
 
@@ -12,6 +13,22 @@ from otorepair.backends import (
 )
 from otorepair.log import set_verbosity, status
 from otorepair.loop import run
+
+
+_DEFAULT_FIX_TIMEOUT = 120.0
+
+
+def _resolve_fix_timeout(cli_value: float | None) -> float:
+    """Resolve fix timeout: CLI flag > env var > default (120s)."""
+    if cli_value is not None:
+        return cli_value
+    raw = os.environ.get("OTOREPAIR_FIX_TIMEOUT", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return _DEFAULT_FIX_TIMEOUT
 
 
 def main() -> int:
@@ -46,6 +63,16 @@ def main() -> int:
         help=(
             "Project root: cwd for the monitored command and Cursor --workspace. "
             "Default: $OTOREPAIR_WORKSPACE if set, else current directory."
+        ),
+    )
+    parser.add_argument(
+        "--fix-timeout",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help=(
+            "Max seconds to wait for the agent to fix an error. "
+            "Default: $OTOREPAIR_FIX_TIMEOUT if set, else 120."
         ),
     )
     parser.add_argument(
@@ -88,6 +115,8 @@ def main() -> int:
             print(auth_msg, file=sys.stderr)
             return 1
 
+    fix_timeout = _resolve_fix_timeout(args.fix_timeout)
+
     try:
         return asyncio.run(
             run(
@@ -95,6 +124,7 @@ def main() -> int:
                 backend=backend,
                 workspace=workspace,
                 agent_executable_path=agent_path,
+                fix_timeout=fix_timeout,
             )
         )
     except KeyboardInterrupt:

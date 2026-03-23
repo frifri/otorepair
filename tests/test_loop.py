@@ -10,6 +10,7 @@ from otorepair.backends import ClaudeBackend
 from otorepair.circuit_breaker import CircuitBreaker
 from otorepair.detector import ErrorDetector, TriageResult
 from otorepair.fixer import FixResult
+from otorepair.history import FixHistory
 from otorepair.log import status
 from otorepair.loop import (
     _extract_error_signature,
@@ -155,6 +156,62 @@ class TestHandleCrash:
         assert result is False
         assert breaker.is_tripped()
 
+    @pytest.mark.asyncio
+    async def test_custom_fix_timeout_passed_through(self):
+        detector = ErrorDetector()
+        detector.feed_line("ValueError: x", is_stderr=True)
+        breaker = CircuitBreaker()
+
+        fix_result = FixResult(success=True, output="Fixed!", duration=2.0)
+        with patch("otorepair.loop.attempt_fix", return_value=fix_result) as mock_fix:
+            await _handle_crash(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd(),
+                fix_timeout=300.0,
+            )
+
+        assert mock_fix.call_args.kwargs["timeout"] == 300.0
+
+    @pytest.mark.asyncio
+    async def test_history_recorded_on_fix(self, tmp_path):
+        detector = ErrorDetector()
+        detector.feed_line("ValueError: x", is_stderr=True)
+        breaker = CircuitBreaker()
+        history = FixHistory()
+
+        fix_result = FixResult(success=True, output="Fixed!", duration=2.0)
+        with patch("otorepair.loop.attempt_fix", return_value=fix_result):
+            await _handle_crash(
+                detector, breaker, "cmd", ClaudeBackend(), tmp_path,
+                history=history,
+            )
+
+        assert len(history.entries) == 1
+        assert history.entries[0].success is True
+
+    @pytest.mark.asyncio
+    async def test_history_context_passed_to_fix(self):
+        detector = ErrorDetector()
+        detector.feed_line("ValueError: x", is_stderr=True)
+        breaker = CircuitBreaker()
+        history = FixHistory()
+        history.record(
+            error_summary="ValueError: x",
+            command="cmd",
+            success=False,
+            duration=1.0,
+        )
+
+        fix_result = FixResult(success=True, output="Fixed!", duration=2.0)
+        with patch("otorepair.loop.attempt_fix", return_value=fix_result) as mock_fix:
+            await _handle_crash(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd(),
+                history=history,
+            )
+
+        ctx = mock_fix.call_args.kwargs["history_context"]
+        assert "FAILED" in ctx
+        assert "ValueError: x" in ctx
+
 
 # ---------------------------------------------------------------------------
 # _handle_live_error
@@ -243,6 +300,56 @@ class TestHandleLiveError:
             )
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_custom_fix_timeout_passed_through_live(self):
+        detector = ErrorDetector()
+        detector.feed_line("ValueError: x", is_stderr=True)
+        breaker = CircuitBreaker()
+
+        triage_result = TriageResult(
+            is_error=True,
+            error_summary="ValueError in app.py",
+            traceback_text="ValueError: x",
+        )
+        fix_result = FixResult(success=True, output="Fixed", duration=1.0)
+
+        with (
+            patch.object(detector, "triage", return_value=triage_result),
+            patch("otorepair.loop.attempt_fix", return_value=fix_result) as mock_fix,
+        ):
+            await _handle_live_error(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd(),
+                fix_timeout=60.0,
+            )
+
+        assert mock_fix.call_args.kwargs["timeout"] == 60.0
+
+    @pytest.mark.asyncio
+    async def test_history_recorded_on_live_error_fix(self, tmp_path):
+        detector = ErrorDetector()
+        detector.feed_line("NameError: y", is_stderr=True)
+        breaker = CircuitBreaker()
+        history = FixHistory()
+
+        triage_result = TriageResult(
+            is_error=True,
+            error_summary="NameError: y",
+            traceback_text="NameError: y",
+        )
+        fix_result = FixResult(success=False, output="failed", duration=1.0)
+
+        with (
+            patch.object(detector, "triage", return_value=triage_result),
+            patch("otorepair.loop.attempt_fix", return_value=fix_result),
+        ):
+            await _handle_live_error(
+                detector, breaker, "cmd", ClaudeBackend(), tmp_path,
+                history=history,
+            )
+
+        assert len(history.entries) == 1
+        assert history.entries[0].success is False
 
     @pytest.mark.asyncio
     async def test_detector_reset_after_triage(self):

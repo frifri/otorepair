@@ -100,12 +100,22 @@ async def attempt_fix(
     backend: AgentBackend | None = None,
     subprocess_cwd: Path | None = None,
     timeout: float = 120.0,
+    history_context: str = "",
 ) -> FixResult:
     prompt = (
         "The following Python application encountered an error while running.\n\n"
         f"Command: {original_command}\n\n"
         f"Error: {error_summary}\n\n"
         f"Traceback:\n{traceback_text}\n\n"
+    )
+
+    if history_context:
+        prompt += (
+            f"{history_context}\n\n"
+            "Use the history above to avoid repeating failed fix strategies.\n\n"
+        )
+
+    prompt += (
         "Please fix this error. Look at the relevant source files, understand the "
         "issue, and make the necessary code changes."
     )

@@ -6,6 +6,7 @@ from otorepair.backends import AgentBackend, ClaudeBackend
 from otorepair.circuit_breaker import CircuitBreaker
 from otorepair.detector import ErrorDetector
 from otorepair.fixer import attempt_fix
+from otorepair.history import FixHistory
 from otorepair.log import debug, status
 from otorepair.patterns import DEATH_CONTEXT_LINES
 from otorepair.runner import ProcessRunner
@@ -65,6 +66,8 @@ async def _handle_crash(
     command: str,
     backend: AgentBackend,
     subprocess_cwd: Path,
+    fix_timeout: float = 120.0,
+    history: FixHistory | None = None,
 ) -> bool:
     context = detector.get_buffered_context()
     lines = context.splitlines()
@@ -80,15 +83,29 @@ async def _handle_crash(
 
     status(f"Process crashed. Attempting fix (attempt {breaker.attempts + 1}/3)...")
 
+    history_context = history.format_context(error_sig) if history else ""
+
     result = await attempt_fix(
         error_summary=error_sig,
         traceback_text=recent,
         original_command=command,
         backend=backend,
         subprocess_cwd=subprocess_cwd,
+        timeout=fix_timeout,
+        history_context=history_context,
     )
 
     breaker.record_attempt(result.success, error_sig)
+
+    if history is not None:
+        history.record(
+            error_summary=error_sig,
+            command=command,
+            success=result.success,
+            duration=result.duration,
+            traceback_snippet=recent,
+            workspace=subprocess_cwd,
+        )
 
     if result.success:
         status(f"Fix applied in {result.duration:.1f}s.")
@@ -105,6 +122,8 @@ async def _handle_live_error(
     command: str,
     backend: AgentBackend,
     subprocess_cwd: Path,
+    fix_timeout: float = 120.0,
+    history: FixHistory | None = None,
 ) -> bool:
     context = detector.get_buffered_context()
     status("Suspicious output detected. Running triage...")
@@ -133,15 +152,29 @@ async def _handle_live_error(
         f"       Attempting fix (attempt {breaker.attempts + 1}/3)..."
     )
 
+    history_context = history.format_context(error_sig) if history else ""
+
     result = await attempt_fix(
         error_summary=triage.error_summary,
         traceback_text=triage.traceback_text,
         original_command=command,
         backend=backend,
         subprocess_cwd=subprocess_cwd,
+        timeout=fix_timeout,
+        history_context=history_context,
     )
 
     breaker.record_attempt(result.success, error_sig)
+
+    if history is not None:
+        history.record(
+            error_summary=error_sig,
+            command=command,
+            success=result.success,
+            duration=result.duration,
+            traceback_snippet=triage.traceback_text,
+            workspace=subprocess_cwd,
+        )
 
     if result.success:
         status(f"Fix applied in {result.duration:.1f}s. Waiting for hot-reload...")
@@ -157,6 +190,7 @@ async def run(
     backend: AgentBackend | None = None,
     workspace: Path | None = None,
     agent_executable_path: str | None = None,
+    fix_timeout: float = 120.0,
 ) -> int:
     agent_backend = backend or ClaudeBackend()
     workdir = (workspace or Path.cwd()).resolve()
@@ -166,9 +200,12 @@ async def run(
     ):
         status(line)
     status(f"Watching: {command}")
+    if fix_timeout != 120.0:
+        status(f"Fix timeout: {fix_timeout:.0f}s")
     runner = ProcessRunner(command, cwd=workdir)
     detector = ErrorDetector(agent_backend, subprocess_cwd=workdir)
     breaker = CircuitBreaker()
+    history = FixHistory.load(workdir)
 
     # Handle signals for clean shutdown
     # First Ctrl+C: graceful shutdown. Second Ctrl+C: force exit.
@@ -238,7 +275,8 @@ async def run(
             status(f"Process exited with code {exit_code}.")
 
             should_continue = await _handle_crash(
-                detector, breaker, command, agent_backend, workdir
+                detector, breaker, command, agent_backend, workdir,
+                fix_timeout=fix_timeout, history=history,
             )
             if not should_continue:
                 status(
@@ -253,7 +291,8 @@ async def run(
         elif settle_task in done:
             # Error detected while process is alive
             should_continue = await _handle_live_error(
-                detector, breaker, command, agent_backend, workdir
+                detector, breaker, command, agent_backend, workdir,
+                fix_timeout=fix_timeout, history=history,
             )
             if not should_continue:
                 stop_event.set()
