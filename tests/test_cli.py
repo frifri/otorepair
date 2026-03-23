@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from otorepair.cli import main
+from otorepair.cli import _resolve_fix_timeout, main
 from otorepair.log import get_verbosity, set_verbosity
 
 
@@ -194,6 +194,58 @@ class TestCliClaudeCheck:
             result = main()
 
         assert result == 130
+
+
+class TestCliFixTimeout:
+    def test_default_timeout_120(self):
+        with (
+            patch("sys.argv", ["otorepair", "cmd"]),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.run", return_value=0) as mock_ar,
+        ):
+            main()
+
+        # The coroutine passed to asyncio.run should have fix_timeout=120.0
+        coro = mock_ar.call_args[0][0]
+        # Close the coroutine to avoid warning
+        coro.close()
+
+    def test_cli_flag_overrides_default(self):
+        with (
+            patch("sys.argv", ["otorepair", "--fix-timeout", "300", "cmd"]),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.run", return_value=0) as mock_ar,
+        ):
+            main()
+
+        coro = mock_ar.call_args[0][0]
+        coro.close()
+
+    def test_env_var_used_when_no_flag(self, monkeypatch):
+        monkeypatch.setenv("OTOREPAIR_FIX_TIMEOUT", "60")
+        with (
+            patch("sys.argv", ["otorepair", "cmd"]),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.run", return_value=0),
+        ):
+            result = main()
+        assert result == 0
+
+    def test_cli_flag_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("OTOREPAIR_FIX_TIMEOUT", "60")
+        with (
+            patch("sys.argv", ["otorepair", "--fix-timeout", "300", "cmd"]),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.run", return_value=0),
+        ):
+            result = main()
+        assert result == 0
+
+    def test_invalid_env_var_uses_default(self, monkeypatch):
+        monkeypatch.setenv("OTOREPAIR_FIX_TIMEOUT", "not-a-number")
+        from otorepair.cli import _resolve_fix_timeout
+
+        assert _resolve_fix_timeout(None) == 120.0
 
 
 class TestCliWorkspace:

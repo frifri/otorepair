@@ -251,6 +251,42 @@ class TestAttemptFixSuccess:
         mock_proc.stdin.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_history_context_included_in_prompt(self):
+        mock_proc = _make_mock_proc(returncode=0)
+
+        with patch(
+            "otorepair.fixer.asyncio.create_subprocess_exec", return_value=mock_proc
+        ):
+            await attempt_fix(
+                error_summary="ImportError: foo",
+                traceback_text="tb",
+                original_command="python app.py",
+                history_context="Previous fix attempts:\n- [FAILED] ImportError: foo",
+            )
+
+        written = mock_proc.stdin.write.call_args[0][0].decode()
+        assert "Previous fix attempts" in written
+        assert "avoid repeating failed fix strategies" in written
+
+    @pytest.mark.asyncio
+    async def test_empty_history_context_not_in_prompt(self):
+        mock_proc = _make_mock_proc(returncode=0)
+
+        with patch(
+            "otorepair.fixer.asyncio.create_subprocess_exec", return_value=mock_proc
+        ):
+            await attempt_fix(
+                error_summary="err",
+                traceback_text="tb",
+                original_command="cmd",
+                history_context="",
+            )
+
+        written = mock_proc.stdin.write.call_args[0][0].decode()
+        assert "Previous fix attempts" not in written
+        assert "avoid repeating" not in written
+
+    @pytest.mark.asyncio
     async def test_multiline_output_captured(self):
         mock_proc = _make_mock_proc(
             stdout_data=b"line 1\nline 2\nline 3\n",

@@ -27,6 +27,7 @@ src/otorepair/
 ├── fixer.py            Agent CLI invocation and output streaming
 ├── backends.py         Backend definitions (Claude Code, Cursor Agent)
 ├── circuit_breaker.py  Consecutive failure tracking
+├── history.py          Persistent fix history (.otorepair/history.json)
 ├── patterns.py         Regex patterns for heuristic matching
 └── log.py              Verbosity and status output
 ```

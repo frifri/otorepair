@@ -51,6 +51,7 @@ At startup, otorepair prints **backend**, **triage/fix model**, then `Watching: 
 |-----------|-------|
 | `--backend` / `OTOREPAIR_BACKEND` | `claude` (default) or `cursor` |
 | `--workspace` / `OTOREPAIR_WORKSPACE` | **Both backends:** cwd for the watched command and agent subprocesses. **Cursor only:** also `agent --workspace`. |
+| `--fix-timeout` / `OTOREPAIR_FIX_TIMEOUT` | Max seconds for each fix attempt (default: 120) |
 | Cursor only | `CURSOR_API_KEY` or `agent login`; `OTOREPAIR_CURSOR_TRIAGE_MODEL` optional |
 
 otorepair will display all output from your command normally. When an error is detected, you'll see:
@@ -66,7 +67,8 @@ otorepair will display all output from your command normally. When an error is d
 ### Command-line reference
 
 ```
-usage: otorepair [-h] [-v] [--backend {claude,cursor}] [--workspace DIR] [--version] command
+usage: otorepair [-h] [-v] [--backend {claude,cursor}] [--workspace DIR]
+                 [--fix-timeout SECS] [--version] command
 
 positional arguments:
   command                The command to run and monitor (e.g. 'python manage.py runserver')
@@ -77,6 +79,7 @@ options:
   --backend {claude,cursor}
                          Agent CLI backend (default: claude)
   --workspace DIR        Project root directory
+  --fix-timeout SECS     Max seconds per fix attempt (default: 120, or $OTOREPAIR_FIX_TIMEOUT)
   --version              Show version and exit
 ```
 
@@ -108,6 +111,12 @@ The heuristic tier watches stderr for these patterns:
 - File references in stack traces (`File "...", line ...`)
 
 The rolling buffer keeps up to 100 lines of recent stderr output. A 2-second "settle timeout" waits for the full error output before triggering triage.
+
+## Fix history
+
+Otorepair maintains a persistent log of fix attempts in `.otorepair/history.json` within your workspace. When the agent encounters a new error, relevant past attempts (both successes and failures) are included as context in the prompt. This helps the agent avoid repeating failed strategies and learn from what worked before.
+
+The history file is created automatically on the first fix attempt. It stores up to 50 entries and is safe to delete at any time.
 
 ## Circuit breaker
 
@@ -154,6 +163,7 @@ loop.py         Main event loop: start process → monitor → detect → fix �
   ├── fixer.py          Spawn agent CLI, stream output, apply fix
   ├── backends.py       Backend config (Claude / Cursor CLI commands & args)
   ├── circuit_breaker.py  Track consecutive failures, halt after 3
+  ├── history.py        Persistent fix history (.otorepair/history.json)
   ├── patterns.py       Regex patterns for heuristic error matching
   └── log.py            Verbosity levels and status output
 ```
@@ -170,9 +180,9 @@ Install the required CLI tool:
 
 Run `agent login` or set the `CURSOR_API_KEY` environment variable.
 
-**Fix attempts time out (120s)**
+**Fix attempts time out**
 
-The agent has 120 seconds to produce a fix. If your codebase is very large, try using `--workspace` to point to a smaller subdirectory, or increase verbosity (`-vvv`) to see what the agent is doing.
+The agent has 120 seconds by default to produce a fix. Use `--fix-timeout 300` (or `OTOREPAIR_FIX_TIMEOUT=300`) to allow more time for large codebases. You can also try `--workspace` to point to a smaller subdirectory, or increase verbosity (`-vvv`) to see what the agent is doing.
 
 **Circuit breaker keeps triggering**
 
