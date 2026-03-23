@@ -63,6 +63,23 @@ otorepair will display all output from your command normally. When an error is d
 [otorepair] Process restarted (PID 12345)
 ```
 
+### Command-line reference
+
+```
+usage: otorepair [-h] [-v] [--backend {claude,cursor}] [--workspace DIR] [--version] command
+
+positional arguments:
+  command                The command to run and monitor (e.g. 'python manage.py runserver')
+
+options:
+  -h, --help             Show help message and exit
+  -v, --verbose          Increase verbosity (-v, -vv, -vvv)
+  --backend {claude,cursor}
+                         Agent CLI backend (default: claude)
+  --workspace DIR        Project root directory
+  --version              Show version and exit
+```
+
 ### Verbose mode
 
 Use `-v` flags for debug output when troubleshooting:
@@ -82,9 +99,88 @@ Two-tier system to balance speed and accuracy:
 
 Process crashes (non-zero exit) skip triage entirely and go straight to the fix pipeline.
 
+### Detected patterns
+
+The heuristic tier watches stderr for these patterns:
+
+- Python tracebacks (`Traceback (most recent call last):`)
+- Error keywords (`Error:`, `Exception:`, `CRITICAL`, `FATAL`)
+- File references in stack traces (`File "...", line ...`)
+
+The rolling buffer keeps up to 100 lines of recent stderr output. A 2-second "settle timeout" waits for the full error output before triggering triage.
+
 ## Circuit breaker
 
 If the same error persists after 3 consecutive fix attempts, otorepair stops and shows you the error. If the error *changes* between attempts (meaning progress is being made), the counter resets.
+
+## Examples
+
+Two runnable examples are included to demonstrate different error scenarios:
+
+### Crash on start (missing env var)
+
+The process crashes immediately because `PORT` is not set — this triggers the **crash path** (no LLM triage, straight to fix):
+
+```bash
+otorepair "python examples/crash_on_start/app.py"
+```
+
+The agent will typically fix it by changing `os.environ["PORT"]` to `os.environ.get("PORT", "8765")`.
+
+### Live error (runtime exception)
+
+An HTTP server that raises `RuntimeError` on GET requests — this triggers the **live error path** (heuristic + LLM triage + fix):
+
+```bash
+# Terminal 1: start otorepair
+otorepair "python examples/broken_http_server/server.py"
+
+# Terminal 2: trigger the error
+curl -s http://127.0.0.1:8765/
+```
+
+The server stays running while otorepair detects the traceback on stderr and patches the handler.
+
+## Architecture
+
+```
+cli.py          Parse args, resolve backend, launch async loop
+  │
+  ▼
+loop.py         Main event loop: start process → monitor → detect → fix → reload
+  │
+  ├── runner.py         Subprocess lifecycle (start, stop, signal handling)
+  ├── detector.py       Two-tier error detection (heuristic + LLM triage)
+  ├── fixer.py          Spawn agent CLI, stream output, apply fix
+  ├── backends.py       Backend config (Claude / Cursor CLI commands & args)
+  ├── circuit_breaker.py  Track consecutive failures, halt after 3
+  ├── patterns.py       Regex patterns for heuristic error matching
+  └── log.py            Verbosity levels and status output
+```
+
+## Troubleshooting
+
+**`claude` or `agent` not found on PATH**
+
+Install the required CLI tool:
+- Claude Code: `npm install -g @anthropic-ai/claude-code`
+- Cursor Agent: see [Cursor CLI installation](https://cursor.com/docs/cli/installation)
+
+**Cursor authentication errors**
+
+Run `agent login` or set the `CURSOR_API_KEY` environment variable.
+
+**Fix attempts time out (120s)**
+
+The agent has 120 seconds to produce a fix. If your codebase is very large, try using `--workspace` to point to a smaller subdirectory, or increase verbosity (`-vvv`) to see what the agent is doing.
+
+**Circuit breaker keeps triggering**
+
+The same error appeared 3 times in a row. Check the error output — it may be something the agent can't fix automatically (e.g., missing system dependency, network issue). Fix it manually and restart.
+
+**Process output not detected as an error**
+
+Otorepair watches **stderr** only. If your application logs errors to stdout, they won't be detected. Most frameworks log errors to stderr by default. Otorepair also sets `PYTHONUNBUFFERED=1` to ensure output is not buffered.
 
 ## Running tests
 
@@ -92,3 +188,7 @@ If the same error persists after 3 consecutive fix attempts, otorepair stops and
 uv pip install -e ".[dev]"
 pytest
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution guidelines.
