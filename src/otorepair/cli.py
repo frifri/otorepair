@@ -62,9 +62,7 @@ def main() -> int:
     if env_err:
         print(env_err, file=sys.stderr)
         return 1
-    if backend_id is None:
-        print("Unable to determine backend.", file=sys.stderr)
-        return 1
+    assert backend_id is not None  # guaranteed by resolve_backend_id when env_err is None
 
     workspace, ws_err = resolve_workspace(args.workspace)
     if ws_err is not None or workspace is None:
