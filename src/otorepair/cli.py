@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import shutil
 import sys
-from pathlib import Path
 
 from otorepair import __version__
 from otorepair.backends import (
@@ -63,7 +62,7 @@ def main() -> int:
     if env_err:
         print(env_err, file=sys.stderr)
         return 1
-    assert backend_id is not None
+    assert backend_id is not None  # guaranteed by resolve_backend_id when env_err is None
 
     workspace, ws_err = resolve_workspace(args.workspace)
     if ws_err is not None or workspace is None:
