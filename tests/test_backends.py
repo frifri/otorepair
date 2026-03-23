@@ -1,5 +1,6 @@
 """Tests for otorepair.backends — CLI selection and argv builders."""
 
+import subprocess
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
@@ -52,6 +53,18 @@ class TestResolveBackendId:
         assert err is not None
         assert "vim" in err
 
+    def test_whitespace_only_env_defaults_to_claude(self, monkeypatch):
+        monkeypatch.setenv("OTOREPAIR_BACKEND", "   ")
+        bid, err = resolve_backend_id(None)
+        assert err is None
+        assert bid == "claude"
+
+    def test_empty_env_defaults_to_claude(self, monkeypatch):
+        monkeypatch.setenv("OTOREPAIR_BACKEND", "")
+        bid, err = resolve_backend_id(None)
+        assert err is None
+        assert bid == "claude"
+
 
 class TestClaudeBackend:
     def test_executable(self):
@@ -86,6 +99,13 @@ class TestClaudeBackend:
             "--allowedTools",
             "Edit,Read,Write,Bash,Glob,Grep",
         ]
+
+    def test_fix_uses_stream_json_stdout_is_false(self):
+        assert ClaudeBackend().fix_uses_stream_json_stdout() is False
+
+    def test_spawn_error_hint(self):
+        hint = ClaudeBackend().spawn_error_hint()
+        assert "http" in hint
 
 
 class TestCursorBackend:
@@ -153,6 +173,10 @@ class TestCursorBackend:
         assert "--model" in argv
         assert argv[argv.index("--model") + 1] == "cheap-model"
 
+    def test_spawn_error_hint(self):
+        hint = CursorBackend().spawn_error_hint()
+        assert "http" in hint
+
 
 class TestCheckCursorCliAuthenticated:
     def test_api_key_skips_agent_status(self, monkeypatch, tmp_path: Path):
@@ -191,6 +215,38 @@ class TestCheckCursorCliAuthenticated:
         assert ok is False
         assert "authenticated" in msg.lower() or "login" in msg.lower()
         assert "please login" in msg
+
+    def test_timeout_returns_failure(self, monkeypatch, tmp_path: Path):
+        monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+        with patch(
+            "otorepair.backends.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="agent status", timeout=15),
+        ):
+            ok, msg = check_cursor_cli_authenticated(tmp_path)
+        assert ok is False
+        assert "timed out" in msg.lower()
+
+    def test_oserror_returns_failure(self, monkeypatch, tmp_path: Path):
+        monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+        with patch(
+            "otorepair.backends.subprocess.run",
+            side_effect=OSError("No such file"),
+        ):
+            ok, msg = check_cursor_cli_authenticated(tmp_path)
+        assert ok is False
+        assert "No such file" in msg
+
+    def test_whitespace_api_key_is_not_valid(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("CURSOR_API_KEY", "   ")
+        fake = CompletedProcess(
+            args=["agent", "status"],
+            returncode=1,
+            stdout="",
+            stderr="not logged in",
+        )
+        with patch("otorepair.backends.subprocess.run", return_value=fake):
+            ok, msg = check_cursor_cli_authenticated(tmp_path)
+        assert ok is False
 
 
 class TestResolveWorkspace:
@@ -235,6 +291,22 @@ class TestResolveWorkspace:
         assert "not a directory" in err
 
 
+class TestResolveWorkspaceEdgeCases:
+    def test_whitespace_only_env_defaults_to_cwd(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OTOREPAIR_WORKSPACE", "   ")
+        ws, err = resolve_workspace(None)
+        assert err is None
+        assert ws == tmp_path.resolve()
+
+    def test_empty_env_defaults_to_cwd(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OTOREPAIR_WORKSPACE", "")
+        ws, err = resolve_workspace(None)
+        assert err is None
+        assert ws == tmp_path.resolve()
+
+
 class TestGetBackend:
     def test_claude(self):
         assert isinstance(get_backend("claude"), ClaudeBackend)
@@ -242,3 +314,11 @@ class TestGetBackend:
     def test_cursor(self, tmp_path: Path):
         b = get_backend("cursor", workspace=tmp_path)
         assert isinstance(b, CursorBackend)
+
+    def test_cursor_workspace_passthrough(self, tmp_path: Path):
+        ws = tmp_path / "proj"
+        ws.mkdir()
+        b = get_backend("cursor", workspace=ws)
+        argv = b.fix_argv()
+        idx = argv.index("--workspace")
+        assert argv[idx + 1] == str(ws.resolve())
