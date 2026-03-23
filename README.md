@@ -20,7 +20,7 @@ Start command → Monitor output → Detect error → Agent fixes it → Reload
 
 ## Requirements
 
-- Python 3.14+
+- Python 3.12+
 - On your PATH: **`claude`** ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)) and/or **`agent`** ([Cursor CLI](https://cursor.com/docs/cli/installation)), depending on `--backend`
 
 ## Installation
