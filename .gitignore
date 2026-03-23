@@ -6,4 +6,3 @@ build/
 .eggs/
 .venv/
 .otorepair/
-uv.lock
