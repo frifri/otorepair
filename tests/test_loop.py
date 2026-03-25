@@ -21,6 +21,18 @@ from otorepair.loop import (
 )
 
 
+# Auto-mock git_snapshot for all tests in this module so existing tests
+# don't need a real git repo.  Dedicated rollback tests override as needed.
+@pytest.fixture(autouse=True)
+def _mock_git_snapshot():
+    with (
+        patch("otorepair.loop.create_snapshot", return_value=None),
+        patch("otorepair.loop.rollback", return_value=True),
+        patch("otorepair.loop.discard_snapshot"),
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # _extract_error_signature
 # ---------------------------------------------------------------------------
@@ -457,3 +469,126 @@ class TestWaitForSettle:
             _wait_for_settle(detector, stop_event),
             timeout=2.0,
         )
+
+
+# ---------------------------------------------------------------------------
+# Rollback integration
+# ---------------------------------------------------------------------------
+
+
+class TestCrashRollback:
+    @pytest.mark.asyncio
+    async def test_snapshot_created_before_fix(self):
+        detector = ErrorDetector()
+        detector.feed_line("ValueError: x", is_stderr=True)
+        breaker = CircuitBreaker()
+
+        fix_result = FixResult(success=True, output="Fixed!", duration=2.0)
+        with (
+            patch("otorepair.loop.attempt_fix", return_value=fix_result),
+            patch("otorepair.loop.create_snapshot", return_value="stash") as mock_snap,
+            patch("otorepair.loop.discard_snapshot") as mock_discard,
+        ):
+            await _handle_crash(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd(),
+                enable_rollback=True,
+            )
+
+        mock_snap.assert_called_once_with(Path.cwd())
+        mock_discard.assert_called_once_with(Path.cwd(), "stash")
+
+    @pytest.mark.asyncio
+    async def test_rollback_called_on_failure(self):
+        detector = ErrorDetector()
+        detector.feed_line("ValueError: x", is_stderr=True)
+        breaker = CircuitBreaker()
+
+        fix_result = FixResult(success=False, output="nope", duration=1.0)
+        with (
+            patch("otorepair.loop.attempt_fix", return_value=fix_result),
+            patch("otorepair.loop.create_snapshot", return_value="stash") as mock_snap,
+            patch("otorepair.loop.rollback", return_value=True) as mock_rollback,
+        ):
+            await _handle_crash(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd(),
+                enable_rollback=True,
+            )
+
+        mock_snap.assert_called_once()
+        mock_rollback.assert_called_once_with(Path.cwd(), "stash")
+
+    @pytest.mark.asyncio
+    async def test_no_snapshot_when_rollback_disabled(self):
+        detector = ErrorDetector()
+        detector.feed_line("ValueError: x", is_stderr=True)
+        breaker = CircuitBreaker()
+
+        fix_result = FixResult(success=False, output="nope", duration=1.0)
+        with (
+            patch("otorepair.loop.attempt_fix", return_value=fix_result),
+            patch("otorepair.loop.create_snapshot") as mock_snap,
+            patch("otorepair.loop.rollback") as mock_rollback,
+        ):
+            await _handle_crash(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd(),
+                enable_rollback=False,
+            )
+
+        mock_snap.assert_not_called()
+        # rollback is still called with None, which is a no-op
+        mock_rollback.assert_called_once_with(Path.cwd(), None)
+
+
+class TestLiveErrorRollback:
+    @pytest.mark.asyncio
+    async def test_snapshot_and_discard_on_success(self):
+        detector = ErrorDetector()
+        detector.feed_line("ValueError: x", is_stderr=True)
+        breaker = CircuitBreaker()
+
+        triage_result = TriageResult(
+            is_error=True,
+            error_summary="ValueError",
+            traceback_text="ValueError: x",
+        )
+        fix_result = FixResult(success=True, output="Fixed", duration=1.0)
+
+        with (
+            patch.object(detector, "triage", return_value=triage_result),
+            patch("otorepair.loop.attempt_fix", return_value=fix_result),
+            patch("otorepair.loop.create_snapshot", return_value="clean") as mock_snap,
+            patch("otorepair.loop.discard_snapshot") as mock_discard,
+        ):
+            await _handle_live_error(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd(),
+                enable_rollback=True,
+            )
+
+        mock_snap.assert_called_once()
+        mock_discard.assert_called_once_with(Path.cwd(), "clean")
+
+    @pytest.mark.asyncio
+    async def test_rollback_on_failure(self):
+        detector = ErrorDetector()
+        detector.feed_line("ValueError: x", is_stderr=True)
+        breaker = CircuitBreaker()
+
+        triage_result = TriageResult(
+            is_error=True,
+            error_summary="ValueError",
+            traceback_text="ValueError: x",
+        )
+        fix_result = FixResult(success=False, output="nope", duration=1.0)
+
+        with (
+            patch.object(detector, "triage", return_value=triage_result),
+            patch("otorepair.loop.attempt_fix", return_value=fix_result),
+            patch("otorepair.loop.create_snapshot", return_value="stash"),
+            patch("otorepair.loop.rollback", return_value=True) as mock_rollback,
+        ):
+            await _handle_live_error(
+                detector, breaker, "cmd", ClaudeBackend(), Path.cwd(),
+                enable_rollback=True,
+            )
+
+        mock_rollback.assert_called_once_with(Path.cwd(), "stash")

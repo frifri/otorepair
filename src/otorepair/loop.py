@@ -6,6 +6,7 @@ from otorepair.backends import AgentBackend, ClaudeBackend
 from otorepair.circuit_breaker import CircuitBreaker
 from otorepair.detector import ErrorDetector
 from otorepair.fixer import attempt_fix
+from otorepair.git_snapshot import create_snapshot, discard_snapshot, rollback
 from otorepair.history import FixHistory
 from otorepair.log import debug, status
 from otorepair.patterns import DEATH_CONTEXT_LINES
@@ -68,6 +69,7 @@ async def _handle_crash(
     subprocess_cwd: Path,
     fix_timeout: float = 120.0,
     history: FixHistory | None = None,
+    enable_rollback: bool = True,
 ) -> bool:
     context = detector.get_buffered_context()
     lines = context.splitlines()
@@ -82,6 +84,9 @@ async def _handle_crash(
         return False
 
     status(f"Process crashed. Attempting fix (attempt {breaker.attempts + 1}/3)...")
+
+    # Snapshot the working tree so we can roll back on failure.
+    snapshot_id = create_snapshot(subprocess_cwd) if enable_rollback else None
 
     history_context = history.format_context(error_sig) if history else ""
 
@@ -108,10 +113,12 @@ async def _handle_crash(
         )
 
     if result.success:
+        discard_snapshot(subprocess_cwd, snapshot_id)
         status(f"Fix applied in {result.duration:.1f}s.")
         return True
     else:
-        status(f"Fix attempt failed: {result.output[:200]}")
+        rollback(subprocess_cwd, snapshot_id)
+        status(f"Fix attempt failed (changes rolled back): {result.output[:200]}")
         debug(f"Full fix output:\n{result.output}", level=2)
         return not breaker.is_tripped()
 
@@ -124,6 +131,7 @@ async def _handle_live_error(
     subprocess_cwd: Path,
     fix_timeout: float = 120.0,
     history: FixHistory | None = None,
+    enable_rollback: bool = True,
 ) -> bool:
     context = detector.get_buffered_context()
     status("Suspicious output detected. Running triage...")
@@ -152,6 +160,9 @@ async def _handle_live_error(
         f"       Attempting fix (attempt {breaker.attempts + 1}/3)..."
     )
 
+    # Snapshot the working tree so we can roll back on failure.
+    snapshot_id = create_snapshot(subprocess_cwd) if enable_rollback else None
+
     history_context = history.format_context(error_sig) if history else ""
 
     result = await attempt_fix(
@@ -177,10 +188,12 @@ async def _handle_live_error(
         )
 
     if result.success:
+        discard_snapshot(subprocess_cwd, snapshot_id)
         status(f"Fix applied in {result.duration:.1f}s. Waiting for hot-reload...")
         return True
     else:
-        status(f"Fix attempt failed: {result.output[:200]}")
+        rollback(subprocess_cwd, snapshot_id)
+        status(f"Fix attempt failed (changes rolled back): {result.output[:200]}")
         debug(f"Full fix output:\n{result.output}", level=2)
         return not breaker.is_tripped()
 
@@ -191,6 +204,7 @@ async def run(
     workspace: Path | None = None,
     agent_executable_path: str | None = None,
     fix_timeout: float = 120.0,
+    enable_rollback: bool = True,
 ) -> int:
     agent_backend = backend or ClaudeBackend()
     workdir = (workspace or Path.cwd()).resolve()
@@ -202,6 +216,14 @@ async def run(
     status(f"Watching: {command}")
     if fix_timeout != 120.0:
         status(f"Fix timeout: {fix_timeout:.0f}s")
+    if enable_rollback:
+        from otorepair.git_snapshot import is_git_repo
+
+        if is_git_repo(workdir):
+            status("Git rollback: enabled (failed fixes will be reverted)")
+        else:
+            status("Git rollback: disabled (not a git repository)")
+            enable_rollback = False
     runner = ProcessRunner(command, cwd=workdir)
     detector = ErrorDetector(agent_backend, subprocess_cwd=workdir)
     breaker = CircuitBreaker()
@@ -277,6 +299,7 @@ async def run(
             should_continue = await _handle_crash(
                 detector, breaker, command, agent_backend, workdir,
                 fix_timeout=fix_timeout, history=history,
+                enable_rollback=enable_rollback,
             )
             if not should_continue:
                 status(
@@ -293,6 +316,7 @@ async def run(
             should_continue = await _handle_live_error(
                 detector, breaker, command, agent_backend, workdir,
                 fix_timeout=fix_timeout, history=history,
+                enable_rollback=enable_rollback,
             )
             if not should_continue:
                 stop_event.set()

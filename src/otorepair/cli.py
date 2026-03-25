@@ -76,6 +76,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--no-rollback",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable git-aware rollback of failed fix attempts. "
+            "By default, otorepair snapshots the working tree before each "
+            "fix and reverts changes if the fix fails."
+        ),
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"otorepair {__version__}",
@@ -117,6 +127,8 @@ def main() -> int:
 
     fix_timeout = _resolve_fix_timeout(args.fix_timeout)
 
+    enable_rollback = not args.no_rollback
+
     try:
         return asyncio.run(
             run(
@@ -125,6 +137,7 @@ def main() -> int:
                 workspace=workspace,
                 agent_executable_path=agent_path,
                 fix_timeout=fix_timeout,
+                enable_rollback=enable_rollback,
             )
         )
     except KeyboardInterrupt:
